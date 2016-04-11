@@ -175,10 +175,6 @@ struct file_t *clnt_open(struct host_t *s, char *filename) {
 #ifdef DEBUG
 	printf("The file going to be opened: %s\n",filename);
 	printf("The file going to be opened in blk: %s\n",blk.data);
-	int i=0;
-	for(i=0;i<FILENAME_SIZE;i++)
-		printf("%c ",filename[i]);
-	printf("\n");
 #endif
 	if(write(sfd,&blk,sizeof(struct blk_t))<0)
 	{
@@ -218,6 +214,7 @@ struct file_t *clnt_open(struct host_t *s, char *filename) {
 
 	struct file_t* ft = (struct file_t*)malloc(sizeof(struct file_t));
 	ft->fd = recv_blk->meta1;
+	ft->sockd = sfd;
 #ifdef DEBUG
 	if(ft!=NULL) printf("received fd: %d\n",ft->fd);
 #endif
@@ -298,7 +295,7 @@ struct cmd_t *clnt_waitcmd(struct host_t *s) {
  */
 int clnt_proccmd(struct host_t *s, struct cmd_t* cmd) {
 	/* feel free to implement read/write in any way that you want */
-	if(cmd == NULL || s == NULL) return -1;
+	if(cmd == NULL || s == NULL) return FAILURE;
 	int type = cmd->type;
 
 	int sfd = s->sockd;
@@ -329,7 +326,7 @@ int clnt_proccmd(struct host_t *s, struct cmd_t* cmd) {
 			msg = "QUIT";
 			break;
 		default:
-			return -1;
+			return FAILURE;
 	}
 #ifdef DEBUG
 	printf("msg: %s\n",msg);
@@ -339,9 +336,9 @@ int clnt_proccmd(struct host_t *s, struct cmd_t* cmd) {
 	if(write(sfd,&blk,sizeof(struct blk_t))<0)
 	{
 		handle_error("Error: write in clnt_proccmd! ");
-		return -1;
+		return FAILURE;
 	}
-	return 0;
+	return SUCCESS;
 }
 
 /**
@@ -352,8 +349,29 @@ int clnt_proccmd(struct host_t *s, struct cmd_t* cmd) {
  * Return Value: 0 on success, -1 on failure.
  */
 int clnt_write(struct file_t *f, unsigned int off, char ch) {
-  /* Fill in here. */
-  return -1;
+	/* Fill in here. */
+	if(f == NULL)
+	{
+		handle_error("struct file_t *f is NULL in clnt_write! ");
+		return FAILURE;
+	}
+	int sfd = f->sockd;
+	struct blk_t blk;
+	memset(&blk,0,sizeof(blk));
+	blk.meta1 = WRITE;
+	blk.meta2 = (int)off;
+	blk.data[0] = ch;
+#ifdef DEBUG
+	printf("The ch going to be written: %c\n",ch);
+	printf("The ch going to be written in blk: %s\n",blk.data);
+#endif
+	if(write(sfd,&blk,sizeof(struct blk_t))<0)
+	{
+		handle_error("Error: write in clnt_write! ");
+		return FAILURE;
+	}
+	
+	return SUCCESS;
 }
 
 /**
@@ -388,7 +406,7 @@ int serv_bind(const char *ip, uint16_t port) {
 	if ((sfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
 	{
 		handle_error("Error: socket error! ");
-		return -1;
+		return FAILURE;
 	}
 
 	memset(&serv_addr, '0', sizeof(serv_addr));
@@ -398,16 +416,16 @@ int serv_bind(const char *ip, uint16_t port) {
 	if(inet_pton(AF_INET, ip, &serv_addr.sin_addr) <= 0)
 	{
 		handle_error("Error: inet_pton error! ");
-		return -1;
+		return FAILURE;
 	}
 
 	if(bind(sfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr))<0)
 	{
 		handle_error("Error: bind error! ");
-		return -1;
+		return FAILURE;
 	}
 
-	return 0;
+	return SUCCESS;
 }
 
 /**
@@ -474,14 +492,6 @@ struct cmd_t *serv_waitcmd(struct host_t *cl) {
 	ct->type = blk->meta1;
 	ct->res = blk->meta2;
 	strncpy(serv_data, blk->data, BLOCK_SIZE);
-#ifdef DEBUG
-	printf("The file going to be opened in blk: %s\n",serv_data);
-	printf("The file going to be opened in blk: %s\n",blk->data);
-			int i=0;
-			for(i=0;i<520;i++)
-				printf("%c ",blk->data[i]);
-			printf("\n");
-#endif
 	return ct;
 }
 
@@ -493,7 +503,7 @@ struct cmd_t *serv_waitcmd(struct host_t *cl) {
  */
 int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 	/* Fill in here. */
-	if(cmd == NULL || cl == NULL) return -1;
+	if(cmd == NULL || cl == NULL) return FAILURE;
 	int type = cmd->type;
 	int sfd = cl->sockd;
 
@@ -501,14 +511,14 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 	int fd;
 	switch(type){
 		case OPEN:
+		{
 			blk.meta2 = 0;
 #ifdef DEBUG
 			char tmp[6] = {0};
 			strncpy(tmp, serv_data, 6);
 			printf("The file going to be opened: %s\n",serv_data);
 			int i=0;
-			for(i=0;i<520;i++)
-				printf("%c ",serv_data[i]);
+			for(i=0;i<520;i++) printf("%c ",serv_data[i]);
 			printf("\n");
 #endif
 			if((fd = open(serv_data, O_RDWR))<0)
@@ -521,10 +531,18 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 			printf("The file opened in server side: %d\n",fd);
 #endif
 			break;
+		}
 		case READ:
 			break;
 		case WRITE:
+		{
+			unsigned int off = (unsigned int)blk.meta2;
+			char ch = blk.data[0];
+#ifdef DEBUG
+			printf("The ch:%c, offset:%u\n",ch,off);
+#endif
 			break;
+		}
 		case CLOSE:
 			break;
 		case EDIT:
@@ -532,7 +550,7 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 		case QUIT:
 			break;
 		default:
-			return -1;
+			return FAILURE;
 	}
 
 	/* Send msg back to client */
@@ -544,8 +562,8 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 		if(write(sfd,&blk,sizeof(struct blk_t))<0)
 		{
 			handle_error("Error: write in clnt_open! ");
-			return -1;
+			return FAILURE;
 		}
 	}
-	return 0;
+	return SUCCESS;
 }

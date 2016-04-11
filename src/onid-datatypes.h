@@ -12,7 +12,7 @@
 
 enum clnt_cmd {OPEN=1, READ, WRITE, CLOSE, EDIT, QUIT};
 enum serv_cmd {YOURTPES=1 /* fill in here. */ };
-enum proc_status {SUCCESS=0 /* fill in here. */ };
+enum proc_status {FAILURE=-1,SUCCESS=0 /* fill in here. */ };
 enum close_type {DONTSAVE=1, SAVE};
 
 struct host_t {
@@ -29,7 +29,6 @@ struct cmd_t {
   int res;                      /* result (successful or not) */
 
   /* feel free to add more fields here */
-  int meta1;					/* additional information for cmd */
 };
 
 struct blk_t {                  /* blocks to send to server */
@@ -40,6 +39,7 @@ struct blk_t {                  /* blocks to send to server */
 
 struct file_t {                 /* open file information */
   int fd;                       /* file descriptor */
+  int sockd;					/* socket descriptor for connection */
   /* Fill in here. */
 };
 
