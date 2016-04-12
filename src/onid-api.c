@@ -23,12 +23,14 @@
 #include "onid-api.h"
 
 #define handle_error(msg) \
-		   do { perror(msg); } while (0)
+			do { perror(msg); } while (0)
+#define size_align_with_block(x) (x/BLOCK_SIZE+1)*BLOCK_SIZE; 
 #define DEBUG
 /* For server */
 int sfd;
 struct sockaddr_in serv_addr; 
 char serv_data[ BLOCK_SIZE ];
+struct file_content fileContent[ MAX_CONNECTION];
 /***************************************************************************
  *                                                                         *
  *                             USER FUNCTIONS                              *
@@ -187,7 +189,7 @@ struct file_t *clnt_open(struct host_t *s, char *filename) {
 	memset(recvBuff, '\0',sizeof(recvBuff));
 	int n=0;
 	struct blk_t* recv_blk = NULL;
-	if((n = read(sfd,recvBuff,sizeof(recvBuff)-1))>0)
+	if((n = read(sfd,recvBuff,sizeof(struct blk_t)))>0)
 	{
 		recvBuff[n] = 0;
 		recv_blk = (struct blk_t*)recvBuff;
@@ -229,7 +231,23 @@ struct file_t *clnt_open(struct host_t *s, char *filename) {
  * Return Value: None.
  */
 void clnt_close(struct host_t *s, struct file_t *f, int close_type) {
-  /* Fill in here. */
+	/* Fill in here. */
+	if(s == NULL || f == NULL)
+	{
+		handle_error("struct host_t* is NULL or struct file_t* is NULL in clnt_close! ");
+	}
+	int sfd = s->sockd;
+	struct blk_t blk;
+	memset(&blk,0,sizeof(blk));
+	blk.meta1 = CLOSE;
+	blk.meta2 = close_type;
+#ifdef DEBUG
+	printf("The close_type: %d\n",blk.meta2);
+#endif
+	if(write(sfd,&blk,sizeof(struct blk_t))<0)
+	{
+		handle_error("Error: write in clnt_close! ");
+	}
 }
 
 /**
@@ -383,8 +401,64 @@ int clnt_write(struct file_t *f, unsigned int off, char ch) {
  * Return Value: Number of bytes read.
  */
 size_t clnt_read(struct file_t *f, char *p, unsigned int off, size_t sz) {
-  /* Fill in here. */
-  return 0;
+	/* Fill in here. */
+	if(f==NULL || p==NULL)
+	{
+		handle_error("struct file_t *f or char*p is NULL in clnt_read! ");
+		return 0;
+	}
+	int sfd = f->sockd;
+	struct blk_t blk;
+	memset(&blk,0,sizeof(blk));
+	blk.meta1 = READ;
+	blk.meta2 = (int)off;
+	blk.data[0] = (char)sz;
+#ifdef DEBUG
+	printf("Going to read %zu chars from offset:%u\n",sz,off);
+#endif
+	if(write(sfd,&blk,sizeof(struct blk_t))<0)
+	{
+		handle_error("Error: write in clnt_read! ");
+		return 0;
+	}
+
+	/* read the server returned struct blk_t */
+	char recvBuff[1024];
+	memset(recvBuff, '\0',sizeof(recvBuff));
+	int n=0;
+	struct blk_t* recv_blk = NULL;
+	int end = 0;
+	int pos = 0;
+	while(!end)
+	{
+		if((n = read(sfd,recvBuff,sizeof(struct blk_t)))>0)
+		{
+			recvBuff[n] = 0;
+			recv_blk = (struct blk_t*)recvBuff;
+#ifdef DEBUG
+			printf("recvBuff: %s\n",recvBuff);
+			printf("received blk: meta1: %d, meta2: %d, data: %s\n",recv_blk->meta1,recv_blk->meta2,recv_blk->data);
+			printf("number of received bytes: %d\n",n);
+#endif
+		}
+		if(n<0)
+		{
+			handle_error("Error: read error! ");
+		}
+		if(recv_blk ==NULL)
+		{
+			handle_error("Error: only read 0! ");
+			return 0;
+		}
+		end = recv_blk->meta2; //The flag that whether the server ends sending data
+		strncpy(p+pos*sizeof(char),recv_blk->data,recv_blk->meta1); //meta1 is for char size
+		pos += recv_blk->meta1;
+		p[pos] = '\0';
+#ifdef DEBUG
+		printf("content of p:%s, pos: %d\n",p,pos);
+#endif
+	}
+	return pos;
 }
 
 
@@ -448,6 +522,8 @@ struct host_t *serv_wait( void ) {
 	}
 	/* Prepare return structure */
 	struct host_t *ht = convertToHost_t(&serv_addr,connfd,0,0);
+	/* Initialize fileContent */
+	memset(fileContent,0,MAX_CONNECTION*sizeof(struct file_content));
 	return ht;
 }
 
@@ -468,7 +544,7 @@ struct cmd_t *serv_waitcmd(struct host_t *cl) {
 
 	memset(recvBuff, '\0',sizeof(recvBuff));
 	struct blk_t* blk = NULL;
-	if((n = read(sfd,recvBuff,sizeof(recvBuff)-1))>0)
+	if((n = read(sfd,recvBuff,sizeof(struct blk_t)))>0)
 	{
 		recvBuff[n] = 0;
 		blk = (struct blk_t*)recvBuff;
@@ -508,7 +584,6 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 	int sfd = cl->sockd;
 
 	struct blk_t blk;
-	int fd;
 	switch(type){
 		case OPEN:
 		{
@@ -518,9 +593,10 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 			strncpy(tmp, serv_data, 6);
 			printf("The file going to be opened: %s\n",serv_data);
 			int i=0;
-			for(i=0;i<520;i++) printf("%c ",serv_data[i]);
+			for(i=0;i<BLOCK_SIZE;i++) printf("%c",serv_data[i]);
 			printf("\n");
 #endif
+			int fd;
 			if((fd = open(serv_data, O_RDWR))<0)
 			{
 				handle_error("Error: open file in serv_proccmd! ");
@@ -530,40 +606,165 @@ int serv_proccmd(struct host_t *cl, struct cmd_t* cmd) {
 #ifdef DEBUG
 			printf("The file opened in server side: %d\n",fd);
 #endif
+			if(sfd<0 || sfd>=MAX_CONNECTION)
+			{
+				handle_error("Error: sfd is not within 0-100! ");
+			}
+			/* Get the size of the file */
+			int size = lseek(fd, 0L, SEEK_END);
+			lseek(fd, 0L, SEEK_SET);
+			int aligned_size = size_align_with_block(size);
+#ifdef DEBUG
+			printf("file size:%d, aligend size:%d (block_size:%d)\n",size,aligned_size,BLOCK_SIZE);
+#endif
+
+			fileContent[sfd].content = (char*)malloc(aligned_size*sizeof(char));
+			fileContent[sfd].size = size;
+			fileContent[sfd].flag = 1;
+			fileContent[sfd].fd = fd;
+			/* Get the content from file */
+			ssize_t read_c_size;
+			if((read_c_size = read(fd, fileContent[sfd].content, size))<0)
+			{
+				handle_error("Error: read from file error! ");
+			}
+#ifdef DEBUG
+			printf("Number of char read from file:%zd\n",read_c_size);
+			printf("file content:%s\n",fileContent[sfd].content);
+#endif
+
+			/* Send msg back to client */
+#ifdef DEBUG
+			printf("sending blk: meta1: %d, meta2: %d, data: %s\n",blk.meta1,blk.meta2,blk.data);
+#endif
+			if(write(sfd,&blk,sizeof(struct blk_t))<0)
+			{
+				handle_error("Error: write in clnt_open! ");
+				return FAILURE;
+			}
 			break;
 		}
 		case READ:
+		{
+			unsigned int off = (unsigned int)cmd->res; //blk->meta2
+			size_t sz = (char)serv_data[0];
+#ifdef DEBUG
+			printf("Offset:%u, size:%zu\n",off,sz);
+#endif
+
+			/* Send msg back to client */
+			int pos=0;
+			while(sz > BLOCK_SIZE)
+			{
+				strncpy(blk.data,fileContent[sfd].content+pos*sizeof(char),BLOCK_SIZE);
+				blk.meta1 = BLOCK_SIZE; // number of sent characters
+				blk.meta2 = 0; //not end
+				sz-=BLOCK_SIZE;
+				pos+=BLOCK_SIZE;
+#ifdef DEBUG
+				printf("sending blk: meta1: %d, meta2: %d, data: %s\n",blk.meta1,blk.meta2,blk.data);
+#endif
+				if(write(sfd,&blk,sizeof(struct blk_t))<0)
+				{
+					handle_error("Error: write when sending data to client! ");
+					return FAILURE;
+				}
+			}
+			strncpy(blk.data,fileContent[sfd].content+pos*sizeof(char),sz);
+			blk.meta1 = sz;
+			blk.meta2 = 1; //end for sending
+#ifdef DEBUG
+				printf("sending blk: meta1: %d, meta2: %d, data: %s\n",blk.meta1,blk.meta2,blk.data);
+#endif
+			if(write(sfd,&blk,sizeof(struct blk_t))<0)
+			{
+				handle_error("Error: write when sending data to client! ");
+				return FAILURE;
+			}
 			break;
+		}
 		case WRITE:
 		{
-			unsigned int off = (unsigned int)blk.meta2;
-			char ch = blk.data[0];
+			unsigned int off = (unsigned int)cmd->res; //blk->meta2
+			char ch = serv_data[0];
 #ifdef DEBUG
-			printf("The ch:%c, offset:%u\n",ch,off);
+			printf("The ch:%c, offset:%u in sfd:%d\n",ch,off,sfd);
+#endif
+			if(fileContent[sfd].flag <= 0)
+			{
+				handle_error("The file content entry is not initialized! ");
+			}
+			/* realloc if size is not enough*/
+			unsigned int aligned_size = size_align_with_block(off);
+			unsigned int used_aligned_size = size_align_with_block(fileContent[sfd].size);
+			if(aligned_size > used_aligned_size)
+			{
+				char* tmp = realloc(fileContent[sfd].content,aligned_size*sizeof(char));
+				if(tmp == NULL)
+				{
+					handle_error("Realloc Fail! ");
+				}
+				else
+				{
+					fileContent[sfd].content = tmp;
+				}
+				fileContent[sfd].size = off;
+#ifdef DEBUG
+				printf("offset:%d, aligend size:%d (block_size:%d)\n",off,aligned_size,BLOCK_SIZE);
+#endif
+			}
+			/* update the content */
+			fileContent[sfd].content[off] = ch;
+#ifdef DEBUG
+			printf("file content:%s\n",fileContent[sfd].content);
 #endif
 			break;
 		}
 		case CLOSE:
+		{
+			int close_type = cmd->res; //blk->meta2
+			int fd = fileContent[sfd].fd;
+#ifdef DEBUG
+			printf("The close_type: %d\n",blk.meta2);
+#endif
+			if(fileContent[sfd].flag <= 0)
+			{
+				handle_error("The file content entry is not initialized! ");
+			}
+
+			/* Record Data */
+			if(close_type == SAVE)
+			{
+#ifdef DEBUG
+				printf("Close type:SAVE, written size:%d)\n",fileContent[sfd].size);
+#endif
+				lseek(fd, 0L, SEEK_SET);
+				if(write(fd,fileContent[sfd].content,fileContent[sfd].size)<0)
+				{
+					handle_error("Error: write error in close command! ");
+				}
+			}
+			//need to free filecontent
+			free(fileContent[sfd].content);
+			memset(&fileContent[sfd],0,sizeof(struct file_content));
+
+			//need to close the open file
+			if(close(fd)<0)
+			{
+				handle_error("Error: close file error in close command! ");
+			}
 			break;
+		}
 		case EDIT:
 			break;
 		case QUIT:
+		{
+
 			break;
+		}
 		default:
 			return FAILURE;
 	}
 
-	/* Send msg back to client */
-	if(type == OPEN)
-	{
-#ifdef DEBUG
-		printf("sending blk: meta1: %d, meta2: %d, data: %s\n",blk.meta1,blk.meta2,blk.data);
-#endif
-		if(write(sfd,&blk,sizeof(struct blk_t))<0)
-		{
-			handle_error("Error: write in clnt_open! ");
-			return FAILURE;
-		}
-	}
 	return SUCCESS;
 }

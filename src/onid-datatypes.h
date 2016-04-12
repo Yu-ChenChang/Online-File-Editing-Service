@@ -9,11 +9,19 @@
 #define BLOCK_SIZE  	512   	/* block size of the files */
 #define MAX_FILE_SIZE 	1048576 /* maximum possible file size */
 #define FILENAME_SIZE	20		/* maximum possible filename size */
+#define MAX_CONNECTION  100		/* maximum possible connection from client */
 
 enum clnt_cmd {OPEN=1, READ, WRITE, CLOSE, EDIT, QUIT};
 enum serv_cmd {YOURTPES=1 /* fill in here. */ };
 enum proc_status {FAILURE=-1,SUCCESS=0 /* fill in here. */ };
 enum close_type {DONTSAVE=1, SAVE};
+
+struct file_content{
+	char* content;
+	unsigned int size;			/* size of used content */
+	int flag;					/* check whether this entry is initialized */
+	int fd;						/* file descriptor of this entry */
+};
 
 struct host_t {
   int sockd;                    /* socket descriptor */
